@@ -3,11 +3,10 @@ const fs = require('fs')
 const crypto = require('crypto')
 const jsYaml = require('js-yaml')
 
-const sourceInstanceName = 'yaml-i18n'
-
-const prefix = (str) => `yamlI18n${str}`
 const defaultTemplateName = '_default.js'
+const prefix = (str) => `yamlI18n${str}`
 
+const sourceInstanceName = 'yaml-i18n'
 const PAGE = prefix('Page')
 const NAME = prefix('Name')
 const PATH = prefix('Path')
@@ -26,39 +25,54 @@ const defaultConfig = {
   templatesDir: 'src/templates'
 }
 
-let config
-
-async function getTemplate (templatePath) {
-  const checkedPath = `./${defaultConfig.templatesDir}/${templatePath}`
+async function getTemplate (templatePath, templatesDir) {
+  const checkedPath = `./${templatesDir}/${templatePath}`
   const resolved = path.resolve(checkedPath)
   return fs.existsSync(resolved) ? checkedPath : false
 }
 
 // check template location up the tree until you find existing template
-async function resolveTemplate (relativePath) {
+async function _resolveTemplate (relativePath, templatesDir) {
   const fragments = relativePath === '' ? ['index'] : relativePath.split('/')
-  const exactMatch = await getTemplate(`${fragments.join('/')}.js`)
+  const exactMatch = await getTemplate(
+    `${fragments.join('/')}.js`,
+    templatesDir
+  )
   if (exactMatch) {
     return exactMatch
   }
   for (let i = 1; i < fragments.length + 1; i++) {
     const query = [...fragments, null].slice(0, -i).join('/')
-    const match = await getTemplate(`${query}/${defaultTemplateName}`)
+    const match = await getTemplate(
+      `${query}/${defaultTemplateName}`,
+      templatesDir
+    )
     if (match) {
       return match
     }
   }
-  return getTemplate(defaultTemplateName)
+  return getTemplate(defaultTemplateName, templatesDir)
 }
 
-function createNodeFields ({ node, actions: { createNodeField } }, fields) {
-  Object.keys(fields).forEach(k => {
+async function resolveTemplate (relativePath, templatesDir) {
+  return path.resolve(_resolveTemplate(relativePath, templatesDir))
+}
+
+function createNodeFields (
+  { node, actions: { createNodeField } },
+  fields
+) {
+  Object.keys(fields).forEach((k) => {
     createNodeField({ node, name: k, value: fields[k] })
   })
 }
 
 async function createYamlChildren (opts, fields) {
-  const { node, loadNodeContent, actions: { createNode, createParentChildLink } } = opts
+  const {
+    node,
+    loadNodeContent,
+    actions: { createNode, createParentChildLink }
+  } = opts
 
   function createChild (content, index) {
     const body = JSON.stringify(content)
@@ -81,7 +95,7 @@ async function createYamlChildren (opts, fields) {
     }
     createNode(nodeData)
     createParentChildLink({ parent: node, child: nodeData })
-  };
+  }
 
   const parsed = jsYaml.load(await loadNodeContent(node))
 
@@ -92,7 +106,74 @@ async function createYamlChildren (opts, fields) {
   }
 }
 
-exports.sourceNodes = (_, opts) => {
+function merge (o, n) {
+  if (o === undefined) {
+    return n
+  }
+  if (n === undefined) {
+    return o
+  }
+  if (['string', 'boolean', 'number', 'bigint'].indexOf(typeof n) >= 0) {
+    return n
+  }
+  if (n instanceof Date) {
+    return n
+  }
+  // use `key` in arrays to match
+  if (Array.isArray(n)) {
+    if (!Array.isArray(o)) {
+      return n
+    }
+    return o.map((item) => {
+      const match = n.find(({ key }) => key === item.key)
+      return merge(item, match)
+    })
+  }
+  // if it's an object...
+  const res = {}
+  Object.keys(o).forEach((key) => {
+    if (n[key] !== undefined) {
+      res._localized = true
+    }
+    res[key] = merge(o[key], n[key])
+  })
+  return res
+}
+
+function getGlobals ({ globalTree, relativePath, locale }) {
+  return Object.keys(globalTree).reduce(
+    (o, key) =>
+      relativePath.startsWith(key) ? { ...o, ...globalTree[key][locale] } : o,
+    {}
+  )
+}
+
+function shouldGenerate ({
+  locals,
+  isDefault,
+  relativePath,
+  generateMissing
+}) {
+  if (generateMissing === true || isDefault || locals._localized) {
+    return true
+  }
+  if (Array.isArray(generateMissing)) {
+    if (generateMissing.indexOf('.yaml') >= 0 && !locals.mdx) {
+      return true
+    }
+    if (generateMissing.indexOf('.md') >= 0 && locals.mdx) {
+      return true
+    }
+    if (generateMissing.find((p) => relativePath.startsWith(p))) {
+      return true
+    }
+  }
+  return false
+}
+
+let config
+
+exports.onPreInit = (_, opts) => {
   if (!Array.isArray(opts.locales)) {
     throw new Error('You must specify a `locales` array in plugin options')
   }
@@ -184,13 +265,23 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }) => {
       }
     }
   `)
-  const { data: { translations: { edges: translations }, pages: { edges: pages } } } = result
+  const {
+    data: {
+      translations: { edges: translations },
+      pages: { edges: pages }
+    }
+  } = result
 
   const globalTree = {}
   const localTree = {}
 
   translations.forEach(({ node: { fields, children } }) => {
-    const { [GLOBAL]: global, [NAME]: name, [PATH]: path, [LOCALE]: locale } = fields
+    const {
+      [GLOBAL]: global,
+      [NAME]: name,
+      [PATH]: path,
+      [LOCALE]: locale
+    } = fields
     const tree = global ? globalTree : localTree
     const branch = tree[path] || {}
     let data = {}
@@ -202,7 +293,10 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }) => {
     }
     if (children[0].yaml) {
       const parsed = JSON.parse(children[0].yaml)
-      data = (name === 'index' && !Array.isArray(parsed)) ? parsed : { [name]: parsed }
+      data =
+        name === 'index' && !Array.isArray(parsed)
+          ? parsed
+          : { [name]: parsed }
     }
     tree[path] = {
       ...branch,
@@ -213,79 +307,33 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }) => {
     }
   })
 
-  function merge (o, n) {
-    if (o === undefined) {
-      return n
-    }
-    if (n === undefined) {
-      return o
-    }
-    if (['string', 'boolean', 'number', 'bigint'].indexOf(typeof n) >= 0) {
-      return n
-    }
-    if (n instanceof Date) {
-      return n
-    }
-    // use `key` in arrays to match
-    if (Array.isArray(n)) {
-      if (!Array.isArray(o)) {
-        return n
-      }
-      return o.map(item => {
-        const match = n.find(({ key }) => key === item.key)
-        return merge(item, match)
-      })
-    }
-    // if it's an object...
-    const res = {}
-    Object.keys(o).forEach(key => {
-      if (n[key] !== undefined) {
-        res._localized = true
-      }
-      res[key] = merge(o[key], n[key])
-    })
-    return res
-  }
-
-  function getGlobals (relativePath, locale) {
-    return Object.keys(globalTree).reduce((o, key) =>
-      relativePath.startsWith(key) ? { ...o, ...globalTree[key][locale] } : o
-    , {})
-  }
-
-  function shouldGenerate ({ locals, isDefault, relativePath, generateMissing }) {
-    if (generateMissing === true || isDefault || locals._localized) {
-      return true
-    }
-    if (Array.isArray(generateMissing)) {
-      if (generateMissing.indexOf('.yaml') >= 0 && !locals.mdx) {
-        return true
-      }
-      if (generateMissing.indexOf('.md') >= 0 && locals.mdx) {
-        return true
-      }
-      if (generateMissing.find(p => relativePath.startsWith(p))) {
-        return true
-      }
-    }
-    return false
-  }
-
   pages.forEach(async ({ node: { relativePath } }) => {
     // TODo somehow invalidate the template when rebuilding page...
-    const comPath = await resolveTemplate(relativePath)
-    const component = path.resolve(comPath)
-    const { defaultLocale, locales, generateMissing } = config
-    const defaultGlobals = getGlobals(relativePath, defaultLocale)
+    const { defaultLocale, locales, generateMissing, templatesDir } = config
+    const component = await resolveTemplate(relativePath, templatesDir)
+    const defaultGlobals = getGlobals({
+      globalTree,
+      relativePath,
+      locale: defaultLocale
+    })
     const defaultLocals = (localTree[relativePath] || {})[defaultLocale] || {}
     locales.forEach((locale) => {
-      const isDefault = (locale === defaultLocale)
-      const globals = isDefault ? defaultGlobals : merge(defaultGlobals, getGlobals(relativePath, locale))
-      const locals = isDefault ? defaultLocals : merge(defaultLocals, (localTree[relativePath] || {})[locale])
+      const isDefault = locale === defaultLocale
+      const globals = isDefault
+        ? defaultGlobals
+        : merge(
+          defaultGlobals,
+          getGlobals({ globalTree, relativePath, locale })
+        )
+      const locals = isDefault
+        ? defaultLocals
+        : merge(defaultLocals, (localTree[relativePath] || {})[locale])
       const linkPrefix = isDefault ? '' : `${locale}/`
       const thisPath = `/${linkPrefix}${relativePath}`
       // skip markdown page creation if it wasn't translated, unless overridden
-      if (shouldGenerate({ locals, isDefault, relativePath, generateMissing })) {
+      if (
+        shouldGenerate({ locals, isDefault, relativePath, generateMissing })
+      ) {
         createPage({
           path: thisPath,
           component,
