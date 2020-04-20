@@ -1,10 +1,12 @@
 const path = require('path')
+const fs = require('fs')
 const crypto = require('crypto')
 const jsYaml = require('js-yaml')
 
 const sourceInstanceName = 'yaml-i18n'
 
 const prefix = (str) => `yamlI18n${str}`
+const defaultTemplateName = '_default.js'
 
 const PAGE = prefix('Page')
 const NAME = prefix('Name')
@@ -17,15 +19,88 @@ const MD = prefix('Markdown')
 const COLLECTION = prefix('Collection')
 const YAML = prefix('Yaml')
 
-let availableLocales = []
-let defaultLocale
+const defaultConfig = {
+  locales: undefined,
+  defaultLocale: undefined,
+  generateMissing: false,
+  templatesDir: 'src/templates'
+}
+
+let config
+
+async function getTemplate (templatePath) {
+  const checkedPath = `./${defaultConfig.templatesDir}/${templatePath}`
+  const resolved = path.resolve(checkedPath)
+  return fs.existsSync(resolved) ? checkedPath : false
+}
+
+// check template location up the tree until you find existing template
+async function resolveTemplate (relativePath) {
+  const fragments = relativePath === '' ? ['index'] : relativePath.split('/')
+  const exactMatch = await getTemplate(`${fragments.join('/')}.js`)
+  if (exactMatch) {
+    return exactMatch
+  }
+  for (let i = 1; i < fragments.length + 1; i++) {
+    const query = [...fragments, null].slice(0, -i).join('/')
+    const match = await getTemplate(`${query}/${defaultTemplateName}`)
+    if (match) {
+      return match
+    }
+  }
+  return getTemplate(defaultTemplateName)
+}
+
+function createNodeFields ({ node, actions: { createNodeField } }, fields) {
+  Object.keys(fields).forEach(k => {
+    createNodeField({ node, name: k, value: fields[k] })
+  })
+}
+
+async function createYamlChildren (opts, fields) {
+  const { node, loadNodeContent, actions: { createNode, createParentChildLink } } = opts
+
+  function createChild (content, index) {
+    const body = JSON.stringify(content)
+    const postfix = index === undefined ? '' : `-${index}`
+    const nodeData = {
+      body,
+      index,
+      id: prefix(`-${node.relativePath}${postfix}`),
+      locale: fields[LOCALE],
+      parent: node.id,
+      path: fields[PATH],
+      internal: {
+        type: fields[FORMAT],
+        contentDigest: crypto.createHash('md5').update(body).digest('hex')
+      }
+    }
+    if (fields[FORMAT] === COLLECTION) {
+      nodeData.content = content
+      nodeData.name = fields[NAME]
+    }
+    createNode(nodeData)
+    createParentChildLink({ parent: node, child: nodeData })
+  };
+
+  const parsed = jsYaml.load(await loadNodeContent(node))
+
+  if (fields[FORMAT] === COLLECTION) {
+    parsed.forEach(createChild)
+  } else {
+    createChild(parsed)
+  }
+}
 
 exports.sourceNodes = (_, opts) => {
   if (!Array.isArray(opts.locales)) {
     throw new Error('You must specify a `locales` array in plugin options')
   }
-  availableLocales = opts.locales
-  defaultLocale = opts.defaultLocale || availableLocales[0]
+  config = {
+    ...defaultConfig,
+    ...opts
+  }
+  config.defaultLocale = config.defaultLocale || opts.locales[0]
 }
 
 // here we just locate and tag relevant nodes
@@ -72,46 +147,6 @@ exports.onCreateNode = async (opts) => {
     if (fields[FORMAT]) {
       createNodeFields(opts, fields)
     }
-  }
-}
-
-function createNodeFields ({ node, actions: { createNodeField } }, fields) {
-  Object.keys(fields).forEach(k => {
-    createNodeField({ node, name: k, value: fields[k] })
-  })
-}
-
-async function createYamlChildren (opts, fields) {
-  const { node, loadNodeContent, actions: { createNode, createParentChildLink } } = opts
-
-  function createChild (content, index) {
-    const body = JSON.stringify(content)
-    const postfix = index === undefined ? '' : `-${index}`
-    const nodeData = {
-      body,
-      index,
-      id: prefix(`-${node.relativePath}${postfix}`),
-      locale: fields[LOCALE],
-      path: fields[PATH],
-      internal: {
-        type: fields[FORMAT],
-        contentDigest: crypto.createHash('md5').update(body).digest('hex')
-      }
-    }
-    if (fields[FORMAT] === COLLECTION) {
-      nodeData.content = content
-      nodeData.name = fields[NAME]
-    }
-    createNode(nodeData)
-    createParentChildLink({ parent: node, child: nodeData })
-  };
-
-  const parsed = jsYaml.load(await loadNodeContent(node))
-
-  if (fields[FORMAT] === COLLECTION) {
-    parsed.forEach(createChild)
-  } else {
-    createChild(parsed)
   }
 }
 
@@ -204,6 +239,9 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }) => {
     // if it's an object...
     const res = {}
     Object.keys(o).forEach(key => {
+      if (n[key] !== undefined) {
+        res._localized = true
+      }
       res[key] = merge(o[key], n[key])
     })
     return res
@@ -215,28 +253,55 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }) => {
     , {})
   }
 
-  pages.forEach(({ node: { relativePath } }) => {
+  function shouldGenerate ({ locals, isDefault, relativePath, generateMissing }) {
+    if (generateMissing === true || isDefault || locals._localized) {
+      return true
+    }
+    if (Array.isArray(generateMissing)) {
+      if (generateMissing.indexOf('.yaml') >= 0 && !locals.mdx) {
+        return true
+      }
+      if (generateMissing.indexOf('.md') >= 0 && locals.mdx) {
+        return true
+      }
+      if (generateMissing.find(p => relativePath.startsWith(p))) {
+        return true
+      }
+    }
+    return false
+  }
+
+  pages.forEach(async ({ node: { relativePath } }) => {
+    // TODo somehow invalidate the template when rebuilding page...
+    const comPath = await resolveTemplate(relativePath)
+    const component = path.resolve(comPath)
+    const { defaultLocale, locales, generateMissing } = config
     const defaultGlobals = getGlobals(relativePath, defaultLocale)
-    const defaultLocals = (localTree[relativePath] || {})[defaultLocale]
-    availableLocales.forEach((locale) => {
+    const defaultLocals = (localTree[relativePath] || {})[defaultLocale] || {}
+    locales.forEach((locale) => {
       const isDefault = (locale === defaultLocale)
       const globals = isDefault ? defaultGlobals : merge(defaultGlobals, getGlobals(relativePath, locale))
       const locals = isDefault ? defaultLocals : merge(defaultLocals, (localTree[relativePath] || {})[locale])
-      const thisPath = isDefault ? `/${relativePath}` : `/${locale}/${relativePath}`
-      createPage({
-        path: thisPath,
-        component: path.resolve('./src/templates/default.js'),
-        context: {
-          locale,
-          relativePath,
-          availableLocales,
-          defaultLocale,
-          i18n: {
-            ...locals,
-            globals
+      const linkPrefix = isDefault ? '' : `${locale}/`
+      const thisPath = `/${linkPrefix}${relativePath}`
+      // skip markdown page creation if it wasn't translated, unless overridden
+      if (shouldGenerate({ locals, isDefault, relativePath, generateMissing })) {
+        createPage({
+          path: thisPath,
+          component,
+          context: {
+            locale,
+            linkPrefix,
+            locales,
+            defaultLocale,
+            relativePath,
+            i18n: {
+              ...locals,
+              globals
+            }
           }
-        }
-      })
+        })
+      }
     })
   })
 }
