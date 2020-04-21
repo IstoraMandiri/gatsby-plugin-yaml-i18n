@@ -1,355 +1,179 @@
-const path = require('path')
-const fs = require('fs')
 const crypto = require('crypto')
 const jsYaml = require('js-yaml')
 
-const defaultTemplateName = '_default.js'
-const prefix = (str) => `yamlI18n${str}`
-
-const sourceInstanceName = 'yaml-i18n'
-const PAGE = prefix('Page')
-const NAME = prefix('Name')
-const PATH = prefix('Path')
-const LOCALE = prefix('Locale')
-const FORMAT = prefix('Format') // md / yaml / collection
-const EMBED = prefix('Embed')
-const GLOBAL = prefix('Global') // global
-const MD = prefix('Markdown')
-const COLLECTION = prefix('Collection')
-const YAML = prefix('Yaml')
-
-const defaultConfig = {
-  locales: undefined,
-  defaultLocale: undefined,
-  generateMissing: false,
-  templatesDir: 'src/templates'
-}
-
-async function getTemplate (templatePath, templatesDir) {
-  const checkedPath = `./${templatesDir}/${templatePath}`
-  const resolved = path.resolve(checkedPath)
-  return fs.existsSync(resolved) ? checkedPath : false
-}
-
-// check template location up the tree until you find existing template
-async function _resolveTemplate (relativePath, templatesDir) {
-  const fragments = relativePath === '' ? ['index'] : relativePath.split('/')
-  const exactMatch = await getTemplate(
-    `${fragments.join('/')}.js`,
-    templatesDir
-  )
-  if (exactMatch) {
-    return exactMatch
-  }
-  for (let i = 1; i < fragments.length + 1; i++) {
-    const query = [...fragments, null].slice(0, -i).join('/')
-    const match = await getTemplate(
-      `${query}/${defaultTemplateName}`,
-      templatesDir
-    )
-    if (match) {
-      return match
-    }
-  }
-  return getTemplate(defaultTemplateName, templatesDir)
-}
-
-async function resolveTemplate (relativePath, templatesDir) {
-  return path.resolve(_resolveTemplate(relativePath, templatesDir))
-}
-
-function createNodeFields (
-  { node, actions: { createNodeField } },
-  fields
-) {
-  Object.keys(fields).forEach((k) => {
-    createNodeField({ node, name: k, value: fields[k] })
-  })
-}
-
-async function createYamlChildren (opts, fields) {
-  const {
-    node,
-    loadNodeContent,
-    actions: { createNode, createParentChildLink }
-  } = opts
-
-  function createChild (content, index) {
-    const body = JSON.stringify(content)
-    const postfix = index === undefined ? '' : `-${index}`
-    const nodeData = {
-      body,
-      index,
-      id: prefix(`-${node.relativePath}${postfix}`),
-      locale: fields[LOCALE],
-      parent: node.id,
-      path: fields[PATH],
-      internal: {
-        type: fields[FORMAT],
-        contentDigest: crypto.createHash('md5').update(body).digest('hex')
-      }
-    }
-    if (fields[FORMAT] === COLLECTION) {
-      nodeData.content = content
-      nodeData.name = fields[NAME]
-    }
-    createNode(nodeData)
-    createParentChildLink({ parent: node, child: nodeData })
-  }
-
-  const parsed = jsYaml.load(await loadNodeContent(node))
-
-  if (fields[FORMAT] === COLLECTION) {
-    parsed.forEach(createChild)
-  } else {
-    createChild(parsed)
-  }
-}
-
-function merge (o, n) {
-  if (o === undefined) {
-    return n
-  }
-  if (n === undefined) {
-    return o
-  }
-  if (['string', 'boolean', 'number', 'bigint'].indexOf(typeof n) >= 0) {
-    return n
-  }
-  if (n instanceof Date) {
-    return n
-  }
-  // use `key` in arrays to match
-  if (Array.isArray(n)) {
-    if (!Array.isArray(o)) {
-      return n
-    }
-    return o.map((item) => {
-      const match = n.find(({ key }) => key === item.key)
-      return merge(item, match)
-    })
-  }
-  // if it's an object...
-  const res = {}
-  Object.keys(o).forEach((key) => {
-    if (n[key] !== undefined) {
-      res._localized = true
-    }
-    res[key] = merge(o[key], n[key])
-  })
-  return res
-}
-
-function getGlobals ({ globalTree, relativePath, locale }) {
-  return Object.keys(globalTree).reduce(
-    (o, key) =>
-      relativePath.startsWith(key) ? { ...o, ...globalTree[key][locale] } : o,
-    {}
-  )
-}
-
-function shouldGenerate ({
-  locals,
-  isDefault,
-  relativePath,
-  generateMissing
-}) {
-  if (generateMissing === true || isDefault || locals._localized) {
-    return true
-  }
-  if (Array.isArray(generateMissing)) {
-    if (generateMissing.indexOf('.yaml') >= 0 && !locals.mdx) {
-      return true
-    }
-    if (generateMissing.indexOf('.md') >= 0 && locals.mdx) {
-      return true
-    }
-    if (generateMissing.find((p) => relativePath.startsWith(p))) {
-      return true
-    }
-  }
-  return false
-}
-
-let config
-
-exports.onPreInit = (_, opts) => {
-  if (!Array.isArray(opts.locales)) {
-    throw new Error('You must specify a `locales` array in plugin options')
-  }
-  config = {
-    ...defaultConfig,
-    ...opts
-  }
-  config.defaultLocale = config.defaultLocale || opts.locales[0]
-}
+const {
+  constants: {
+    CONTENT_KEY,
+    COLLECTION,
+    YAML,
+    MARKDOWN,
+    PLUGIN_NAME,
+    TEMPLATES_KEY,
+    FIELD_NAME,
+    DEFAULT_TEMPLATE
+  }, ...utils
+} = require('./utils')
 
 // here we just locate and tag relevant nodes
-exports.onCreateNode = async (opts) => {
-  const { node } = opts
-  if (node.sourceInstanceName === sourceInstanceName) {
-    // handle pages
-    if (node.internal.type === 'Directory') {
-      createNodeFields(opts, { [PAGE]: true })
-      return
-    }
-    // parse the filename, `name.[type?].locale.ext`
-    const [name, type, locale] = node.name.split('.')
-    // default fields for querying
-    const fields = {
-      [NAME]: name.replace(/-([a-z])/g, (g) => g[1].toUpperCase()), // da-shes to camelCase
-      [PATH]: node.relativeDirectory,
-      [LOCALE]: locale,
-      [EMBED]: false,
-      [GLOBAL]: false,
-      [FORMAT]: undefined
-    }
-    // decorate correct params
-    if (locale === undefined) {
-      fields[LOCALE] = type
-    }
-    if (type === 'global') {
-      fields[GLOBAL] = true
-    }
-    if (node.extension === 'md' || node.extension === 'mdx') {
-      fields[FORMAT] = MD
-      fields[EMBED] = true
-    }
-    if (type !== 'collection' && node.extension === 'yaml') {
-      fields[FORMAT] = YAML
-      fields[EMBED] = true
-      await createYamlChildren(opts, fields)
-    }
-    if (type === 'collection' && node.extension === 'yaml') {
-      fields[FORMAT] = COLLECTION
-      await createYamlChildren(opts, fields)
-    }
-    // update the parent node fields for querying
-    if (fields[FORMAT]) {
-      createNodeFields(opts, fields)
-    }
+exports.onCreateNode = async ({
+  node,
+  getNode,
+  loadNodeContent,
+  actions: { createNode, createParentChildLink, createNodeField }
+}) => {
+  // only deal with the files we care about...
+  if (
+    node.sourceInstanceName !== CONTENT_KEY ||
+    ['mdx', 'md', 'yaml'].indexOf(node.extension) === -1
+  ) {
+    return
   }
-}
-
-exports.createPages = async ({ graphql, getNode, actions: { createPage } }) => {
-  const result = await graphql(`
-    query {
-      pages: allDirectory(filter: {fields: {${PAGE}: {eq: true}}}) {
-        edges {
-          node {
-            relativePath
-          }
+  // parse file name
+  const [_name, _type, _locale] = node.name.split('.')
+  // throw invalid types
+  if (_locale && ['global', 'collection'].indexOf(_type) === -1) {
+    throw Error(`Invalid type '${_type}' set on`, node)
+  }
+  // populate fields for querying
+  const collection = _type === 'collection'
+  const directory = node.relativeDirectory
+  const parentDirectory = node.relativeDirectory.split('/').slice(0, -1).join('/')
+  const fields = {
+    name: utils.camelCase(_name),
+    global: _type === 'global',
+    locale: _locale || _type,
+    injected: !collection, // yaml and markdown have refs injected into page context
+    type: collection ? COLLECTION : node.extension === 'yaml' ? YAML : MARKDOWN
+  }
+  // add fields to child MDX for convenience in queries
+  if (fields.type === MARKDOWN) {
+    const mdxNode = getNode(node.children[0])
+    createNodeField({
+      node: mdxNode,
+      name: FIELD_NAME,
+      value: { locale: fields.locale, directory, parentDirectory }
+    })
+  }
+  // create child YAML nodes
+  if (node.extension === 'yaml') {
+    const parsedYaml = jsYaml.load(await loadNodeContent(node));
+    (collection ? parsedYaml : [parsedYaml]).forEach((content, index) => {
+      const body = JSON.stringify(content)
+      const nodeData = {
+        id: `${PLUGIN_NAME}-${node.relativePath}${collection ? `-${index}` : ''}`,
+        body,
+        directory,
+        parentDirectory,
+        key: content.key,
+        parent: node.id,
+        locale: fields.locale,
+        ...(collection && { index, content, name: fields.name }),
+        internal: {
+          type: fields.type,
+          contentDigest: crypto.createHash('md5').update(body).digest('hex')
         }
       }
-      translations: allFile(filter: {fields: {${EMBED}: {eq: true}}}) {
-        edges {
-          node {
-            id
-            children {
-              ... on Mdx {
-                mdx: body
-                id
-              }
-              ... on ${YAML} {
-                yaml: body
-              }
+      createNode(nodeData)
+      createParentChildLink({ parent: node, child: nodeData })
+    })
+  }
+  // update the parent node for querying later
+  createNodeField({ node, name: FIELD_NAME, value: fields })
+}
+
+exports.createPages = async ({ graphql, getNode, actions: { createPage } }, passedConfig) => {
+  // query content, pages and templates
+  const {
+    data: {
+      pages: { nodes: pages },
+      templates: { nodes: _templates },
+      content: { nodes: content }
+    }
+  } = await graphql(`
+    query {
+      pages: allDirectory(filter: { sourceInstanceName: { eq: "${CONTENT_KEY}"} }) {
+        nodes {
+            relativePath
+          }
+      }
+      templates: allFile(filter: { sourceInstanceName: { eq: "${TEMPLATES_KEY}"} }) {
+        nodes {
+            relativePath
+            absolutePath
+          }
+      }
+      content: allFile(filter: {fields: {${FIELD_NAME}: {injected: {eq: true}}}}) {
+        nodes {
+          relativeDirectory
+          fields {
+            ${FIELD_NAME} {
+              locale
+              name
+              global
             }
-            fields {
-              ${GLOBAL}
-              ${LOCALE}
-              ${NAME}
-              ${PATH}
+          }
+          children {
+            ... on ${YAML} {
+              body
+            }
+            ... on Mdx {
+              id
             }
           }
         }
       }
     }
   `)
-  const {
-    data: {
-      translations: { edges: translations },
-      pages: { edges: pages }
+  if (pages.length === 0) {
+    throw Error(`Could not find any content! Did you specify 'gatsby-source-filesystem' with name: '${CONTENT_KEY}'?`)
+  }
+  if (_templates.length === 0) {
+    throw Error(`Could not find any templates! Did you specify 'gatsby-source-filesystem' with name: '${TEMPLATES_KEY}'?`)
+  }
+  // transform into key / vals
+  const templates = _templates.reduce((o, { relativePath: r, absolutePath: a }) => ({ ...o, [r]: a }), {})
+  // get translations
+  const translations = utils.createTranslationsTree(content, getNode)
+  // resolve config
+  const { defaultLocale, locales, generateMissing } = utils.getConfig(passedConfig)
+  // create the pages
+  pages.forEach(({ relativePath }) => {
+    const defaultGlobals = utils.getGlobals(translations.global, relativePath, defaultLocale)
+    const defaultLocals = (translations.local[relativePath] || {})[defaultLocale] || {}
+    const { mdxId } = defaultLocals
+    const component = utils.findTemplate(templates, relativePath, mdxId)
+    if (!component) {
+      throw Error(`Could not find template for ${relativePath}. Did you create a ${DEFAULT_TEMPLATE} file?`)
     }
-  } = result
-
-  const globalTree = {}
-  const localTree = {}
-
-  translations.forEach(({ node: { fields, children } }) => {
-    const {
-      [GLOBAL]: global,
-      [NAME]: name,
-      [PATH]: path,
-      [LOCALE]: locale
-    } = fields
-    const tree = global ? globalTree : localTree
-    const branch = tree[path] || {}
-    let data = {}
-    if (children[0].mdx) {
-      const { mdx, id } = children[0]
-      const params = getNode(id).frontmatter
-      const parsed = { ...params, mdx }
-      data = name === 'index' ? parsed : { [name]: parsed }
-    }
-    if (children[0].yaml) {
-      const parsed = JSON.parse(children[0].yaml)
-      data =
-        name === 'index' && !Array.isArray(parsed)
-          ? parsed
-          : { [name]: parsed }
-    }
-    tree[path] = {
-      ...branch,
-      [locale]: {
-        ...branch[locale],
-        ...data
-      }
-    }
-  })
-
-  pages.forEach(async ({ node: { relativePath } }) => {
-    // TODo somehow invalidate the template when rebuilding page...
-    const { defaultLocale, locales, generateMissing, templatesDir } = config
-    const component = await resolveTemplate(relativePath, templatesDir)
-    const defaultGlobals = getGlobals({
-      globalTree,
-      relativePath,
-      locale: defaultLocale
-    })
-    const defaultLocals = (localTree[relativePath] || {})[defaultLocale] || {}
     locales.forEach((locale) => {
-      const isDefault = locale === defaultLocale
-      const globals = isDefault
-        ? defaultGlobals
-        : merge(
-          defaultGlobals,
-          getGlobals({ globalTree, relativePath, locale })
-        )
-      const locals = isDefault
-        ? defaultLocals
-        : merge(defaultLocals, (localTree[relativePath] || {})[locale])
-      const linkPrefix = isDefault ? '' : `${locale}/`
+      // generate local specific context
+      const isDefaultLocale = locale === defaultLocale
+      const linkPrefix = isDefaultLocale ? '' : `${locale}/`
       const thisPath = `/${linkPrefix}${relativePath}`
+      const globals = isDefaultLocale ? defaultGlobals : utils.merge(defaultGlobals, utils.getGlobals(translations.local, relativePath, locale))
+      const _locals = isDefaultLocale ? defaultLocals : utils.merge(defaultLocals, (translations.local[relativePath] || {})[locale])
+      const { mdxId, ...locals } = _locals
       // skip markdown page creation if it wasn't translated, unless overridden
-      if (
-        shouldGenerate({ locals, isDefault, relativePath, generateMissing })
-      ) {
-        createPage({
-          path: thisPath,
-          component,
-          context: {
-            locale,
-            linkPrefix,
-            locales,
-            defaultLocale,
-            relativePath,
-            i18n: {
-              ...locals,
-              globals
-            }
-          }
-        })
+      if (utils.skipGeneration({ locals, isDefaultLocale, relativePath, generateMissing })) {
+        return
       }
+      createPage({
+        path: thisPath,
+        component,
+        context: {
+          locale,
+          linkPrefix,
+          locales,
+          isDefaultLocale,
+          defaultLocale,
+          relativePath,
+          mdxId,
+          i18n: {
+            ...locals,
+            globals
+          }
+        }
+      })
     })
   })
 }
