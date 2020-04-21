@@ -2,18 +2,16 @@
   "name": "gatsby-plugin-yaml-i18n",
   "version": "0.1.0",
   "description": "YAML and Markdown based i18n for gatsby",
+  "repository": "github:hitchcott/gatsby-plugin-yaml-i18n",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "keywords": [
     "gatsby",
-    "gatsby-plugin"
+    "gatsby-plugin",
+    "i18n"
   ],
   "author": "Chris Hitchcott <chris@hitchcott.com>",
   "license": "MIT",
   "dependencies": {
-    "deepmerge": "^4.2.2",
     "js-yaml": "^3.13.1"
   },
   "devDependencies": {

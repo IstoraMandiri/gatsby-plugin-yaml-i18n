@@ -1,3 +1,3 @@
-# Gatsby Plugin YAML i18n
+# gatsby-plugin-yaml-i18n
 
-TODO: Readme
+TODO: Docs
