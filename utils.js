@@ -52,6 +52,7 @@ function merge (o, n) {
       return n
     }
     return o.map((item) => {
+      if (!item.key) { return item }
       const match = n.find(({ key }) => key === item.key)
       return merge(item, match)
     })
