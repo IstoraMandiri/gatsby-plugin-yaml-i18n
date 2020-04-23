@@ -145,11 +145,12 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }, pass
     if (!component) {
       throw Error(`Could not find template for ${relativePath}. Did you create a ${DEFAULT_TEMPLATE} file?`)
     }
+    // console.log(`${relativePath} --> ${component}`)
     locales.forEach((locale) => {
       // generate local specific context
       const isDefaultLocale = locale === defaultLocale
-      const linkPrefix = isDefaultLocale ? '' : `${locale}/`
-      const thisPath = `/${linkPrefix}${relativePath}`
+      const linkPrefix = isDefaultLocale ? '' : `/${locale}`
+      const thisPath = `${linkPrefix}/${relativePath}`
       const globals = isDefaultLocale ? defaultGlobals : utils.merge(defaultGlobals, utils.getGlobals(translations.local, relativePath, locale))
       const _locals = isDefaultLocale ? defaultLocals : utils.merge(defaultLocals, (translations.local[relativePath] || {})[locale])
       const { mdxId, ...locals } = _locals
