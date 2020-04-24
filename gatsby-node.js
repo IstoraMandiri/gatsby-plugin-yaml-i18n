@@ -1,4 +1,3 @@
-const crypto = require('crypto')
 const jsYaml = require('js-yaml')
 
 const {
@@ -9,7 +8,9 @@ const {
     MARKDOWN,
     PLUGIN_NAME,
     TEMPLATES_KEY,
-    FIELD_NAME,
+    GLOBAL,
+    NODE_TYPE,
+    ALL_NODE_TYPE,
     DEFAULT_TEMPLATE
   }, ...utils
 } = require('./utils')
@@ -19,7 +20,7 @@ exports.onCreateNode = async ({
   node,
   getNode,
   loadNodeContent,
-  actions: { createNode, createParentChildLink, createNodeField }
+  actions: { createNode, createParentChildLink }
 }) => {
   // only deal with the files we care about...
   if (
@@ -31,57 +32,67 @@ exports.onCreateNode = async ({
   // parse file name
   const [_name, _type, _locale] = node.name.split('.')
   // throw invalid types
-  if (_locale && ['global', 'collection'].indexOf(_type) === -1) {
+  if (_locale && [GLOBAL, COLLECTION].indexOf(_type) === -1) {
     throw Error(`Invalid type '${_type}' set on`, node)
   }
   // populate fields for querying
-  const collection = _type === 'collection'
-  const directory = node.relativeDirectory
-  const parentDirectory = node.relativeDirectory.split('/').slice(0, -1).join('/')
+  const collection = _type === COLLECTION
+  const type = collection ? COLLECTION : node.extension === 'yaml' ? YAML : MARKDOWN
   const fields = {
+    type,
+    id: `${PLUGIN_NAME}-${type}-${node.relativePath}`,
     name: utils.camelCase(_name),
-    global: _type === 'global',
+    global: _type === GLOBAL,
     locale: _locale || _type,
     injected: !collection, // yaml and markdown have refs injected into page context
-    type: collection ? COLLECTION : node.extension === 'yaml' ? YAML : MARKDOWN
+    relativeDirectory: node.relativeDirectory,
+    parentDirectory: node.relativeDirectory.split('/').slice(0, -1).join('/')
   }
   // add fields to child MDX for convenience in queries
   if (fields.type === MARKDOWN) {
     const mdxNode = getNode(node.children[0])
-    createNodeField({
-      node: mdxNode,
-      name: FIELD_NAME,
-      value: { locale: fields.locale, directory, parentDirectory }
-    })
+    const data = mdxNode.frontmatter
+    const json = JSON.stringify(data)
+    const nodeData = {
+      ...fields,
+      json,
+      mdxId: mdxNode.id,
+      parent: mdxNode.id,
+      internal: {
+        type: NODE_TYPE,
+        contentDigest: utils.hash(json)
+      }
+    }
+    createNode(nodeData)
+    createParentChildLink({ parent: mdxNode, child: nodeData })
   }
   // create child YAML nodes
   if (node.extension === 'yaml') {
     const parsedYaml = jsYaml.load(await loadNodeContent(node));
-    (collection ? parsedYaml : [parsedYaml]).forEach((content, index) => {
-      const body = JSON.stringify(content)
+    (collection ? parsedYaml : [parsedYaml]).forEach((_data, index) => {
+      // cast date to a string to make it queryable similar to mdx
+      const date = _data.date instanceof Date ? _data.date.toISOString() : _data.date
+      const data = _data.date ? { ..._data, date } : _data
+      const json = JSON.stringify(data)
       const nodeData = {
-        id: `${PLUGIN_NAME}-${node.relativePath}${collection ? `-${index}` : ''}`,
-        body,
-        directory,
-        parentDirectory,
-        key: content.key,
+        ...fields,
+        id: `${fields.id}${collection ? `-${index}` : ''}`,
+        json,
+        key: data.key,
         parent: node.id,
-        locale: fields.locale,
-        ...(collection && { index, content, name: fields.name }),
+        ...(collection && { index, data }),
         internal: {
-          type: fields.type,
-          contentDigest: crypto.createHash('md5').update(body).digest('hex')
+          type: NODE_TYPE,
+          contentDigest: utils.hash(json)
         }
       }
       createNode(nodeData)
       createParentChildLink({ parent: node, child: nodeData })
     })
   }
-  // update the parent node for querying later
-  createNodeField({ node, name: FIELD_NAME, value: fields })
 }
 
-exports.createPages = async ({ graphql, getNode, actions: { createPage } }, passedConfig) => {
+exports.createPages = async ({ graphql, actions: { createPage } }, passedConfig) => {
   // query content, pages and templates
   const {
     data: {
@@ -102,28 +113,19 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }, pass
             absolutePath
           }
       }
-      content: allFile(filter: {fields: {${FIELD_NAME}: {injected: {eq: true}}}}) {
+      content: ${ALL_NODE_TYPE}(filter: { injected: { eq: true } }) {
         nodes {
           relativeDirectory
-          fields {
-            ${FIELD_NAME} {
-              locale
-              name
-              global
-            }
-          }
-          children {
-            ... on ${YAML} {
-              body
-            }
-            ... on Mdx {
-              id
-            }
-          }
+          locale
+          name
+          global
+          mdxId
+          json
         }
       }
     }
   `)
+
   if (pages.length === 0) {
     throw Error(`Could not find any content! Did you specify 'gatsby-source-filesystem' with name: '${CONTENT_KEY}'?`)
   }
@@ -133,7 +135,7 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }, pass
   // transform into key / vals
   const templates = _templates.reduce((o, { relativePath: r, absolutePath: a }) => ({ ...o, [r]: a }), {})
   // get translations
-  const translations = utils.createTranslationsTree(content, getNode)
+  const translations = utils.createTranslationsTree(content)
   // resolve config
   const { defaultLocale, locales, generateMissing } = utils.getConfig(passedConfig)
   // create the pages
@@ -158,7 +160,7 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }, pass
       if (utils.skipGeneration({ locals, isDefaultLocale, relativePath, generateMissing })) {
         return
       }
-      createPage({
+      const pageData = {
         path: thisPath,
         component,
         context: {
@@ -174,7 +176,8 @@ exports.createPages = async ({ graphql, getNode, actions: { createPage } }, pass
             globals
           }
         }
-      })
+      }
+      createPage(pageData)
     })
   })
 }

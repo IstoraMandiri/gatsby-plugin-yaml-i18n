@@ -1,17 +1,25 @@
+const crypto = require('crypto')
+
 const PLUGIN_NAME = 'yaml-i18n'
 const TEMPLATES_KEY = `${PLUGIN_NAME}-templates`
 const CONTENT_KEY = `${PLUGIN_NAME}-content`
-const YAML = 'i18nYaml'
-const MARKDOWN = 'i18nMarkdown'
-const COLLECTION = 'i18nCollection'
+const YAML = 'yaml'
+const MARKDOWN = 'markdown'
+const GLOBAL = 'global'
+const COLLECTION = 'collection'
 const DEFAULT_TEMPLATE = '_default.js'
 const DEFAULT_MDX_TEMPLATE = '_markdown.js'
-const FIELD_NAME = 'i18n'
+const NODE_TYPE = 'yamlI18n'
+const ALL_NODE_TYPE = 'allYamlI18N'
 
 const defaultConfig = {
   locales: undefined,
   defaultLocale: undefined,
   generateMissing: false
+}
+
+function hash (str) {
+  return crypto.createHash('md5').update(str).digest('hex')
 }
 
 function getConfig (passedConfig) {
@@ -68,13 +76,13 @@ function merge (o, n) {
   return res
 }
 
-function createTranslationsTree (content, getNode) {
+function createTranslationsTree (content) {
   const translations = { global: {}, local: {} }
-  content.forEach(({ relativeDirectory, fields, children: [{ id, body }] }) => {
-    const { locale, global, name } = fields[FIELD_NAME]
+  content.forEach(({ relativeDirectory, locale, name, global, json: _json, mdxId }) => {
     const tree = global ? translations.global : translations.local
     const branch = tree[relativeDirectory] || {}
-    const parsed = id ? { ...(getNode(id).frontmatter), mdxId: id } : JSON.parse(body)
+    const json = JSON.parse(_json)
+    const parsed = mdxId ? { ...json, mdxId } : json
     const primary = name === 'index' && !Array.isArray(parsed)
     const data = primary ? parsed : { [name]: parsed }
     tree[relativeDirectory] = { ...branch, [locale]: { ...branch[locale], ...data } }
@@ -120,6 +128,7 @@ function findTemplate (templates, relativePath, isMdx) {
 
 module.exports = {
   createTranslationsTree,
+  hash,
   merge,
   camelCase,
   getGlobals,
@@ -133,7 +142,9 @@ module.exports = {
     MARKDOWN,
     PLUGIN_NAME,
     TEMPLATES_KEY,
-    FIELD_NAME,
-    DEFAULT_TEMPLATE
+    DEFAULT_TEMPLATE,
+    GLOBAL,
+    NODE_TYPE,
+    ALL_NODE_TYPE
   }
 }
