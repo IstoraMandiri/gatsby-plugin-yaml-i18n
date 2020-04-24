@@ -56,6 +56,7 @@ exports.onCreateNode = async ({
     const nodeData = {
       ...fields,
       json,
+      data,
       mdxId: mdxNode.id,
       parent: mdxNode.id,
       internal: {
