@@ -1,6 +1,6 @@
 {
   "name": "gatsby-plugin-yaml-i18n",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "YAML and Markdown based i18n for gatsby",
   "repository": "github:hitchcott/gatsby-plugin-yaml-i18n",
   "main": "index.js",
@@ -13,6 +13,10 @@
   "license": "MIT",
   "dependencies": {
     "js-yaml": "^3.13.1"
+  },
+  "peerDependencies": {
+    "gatsby": "^2.20.18",
+    "react": "^16.13.1"
   },
   "devDependencies": {
     "eslint": "^6.8.0",

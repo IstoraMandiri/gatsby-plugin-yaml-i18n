@@ -4,10 +4,13 @@ import i18nContext from './i18nContext'
 
 const withI18n = () => Comp => {
   return props => {
-    const { pageContext: { locale, linkPrefix: i18nLinkPrefix } } = props
+    // parse json and create locale context
+    const { pageContext: _pc, pageContext: { locale, linkPrefix, i18n } } = props
+    const pageContext = { ..._pc, i18n: JSON.parse(i18n) }
+    const children = { ...props.children, props: { ...props.children.props, pageContext } }
     return (
-      <i18nContext.Provider value={{ locale, i18nLinkPrefix }}>
-        <Comp {...props} />
+      <i18nContext.Provider value={{ locale, linkPrefix }}>
+        <Comp {...props} pageContext={pageContext} children={children} />
       </i18nContext.Provider>
     )
   }
