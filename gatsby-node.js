@@ -171,8 +171,7 @@ exports.createPages = async ({ graphql, actions: { createPage } }, passedConfig)
           defaultLocale,
           relativePath,
           mdxId,
-          // keep it as a string to keep gatsby's inference happy
-          i18n: JSON.stringify({ ...locals, globals })
+          i18n: { ...locals, globals }
         }
       }
       createPage(pageData)
