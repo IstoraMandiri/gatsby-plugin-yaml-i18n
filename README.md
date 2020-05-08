@@ -9,6 +9,7 @@ This plugin provides an flexible, scalable and developer-friendly approach to i1
 To start from scratch, install the starter project:
 
 ```
+# THIS IS NOT READY YET, DO NOT USE IT!
 gatsby new https://github.com/hitchcott/gatsby-starter-yaml-i18n
 ```
 
