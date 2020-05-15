@@ -153,7 +153,7 @@ exports.createPages = async ({ graphql, actions: { createPage } }, passedConfig)
       const isDefaultLocale = locale === defaultLocale
       const linkPrefix = isDefaultLocale ? '' : `/${locale}`
       const thisPath = `${linkPrefix}/${relativePath}`
-      const globals = isDefaultLocale ? defaultGlobals : utils.merge(defaultGlobals, utils.getGlobals(translations.local, relativePath, locale))
+      const globals = isDefaultLocale ? defaultGlobals : utils.merge(defaultGlobals, utils.getGlobals(translations.global, relativePath, locale))
       const _locals = isDefaultLocale ? defaultLocals : utils.merge(defaultLocals, (translations.local[relativePath] || {})[locale])
       const { mdxId, ...locals } = _locals
       // skip markdown page creation if it wasn't translated, unless overridden
