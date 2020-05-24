@@ -6,10 +6,9 @@ This plugin provides an flexible, scalable and developer-friendly approach to i1
 
 ## Setup
 
-To start from scratch, install the starter project:
+To start from scratch, install the starter project ([demo](https://gatsby-starter-yaml-i18n.netlify.app/)):
 
 ```
-# THIS IS NOT READY YET, DO NOT USE IT!
 gatsby new https://github.com/hitchcott/gatsby-starter-yaml-i18n
 ```
 
