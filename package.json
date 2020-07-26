@@ -1,6 +1,6 @@
 {
   "name": "gatsby-plugin-yaml-i18n",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "YAML and Markdown based i18n for gatsby",
   "repository": "github:hitchcott/gatsby-plugin-yaml-i18n",
   "main": "index.js",

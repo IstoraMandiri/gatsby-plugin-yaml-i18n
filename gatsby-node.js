@@ -17,6 +17,13 @@ const {
   ...utils
 } = require('./utils')
 
+function formatDateData (_data) {
+  const date = _data.date instanceof Date ? _data.date.toISOString() : _data.date
+  const data = _data.date ? { ..._data, date } : _data
+  const json = JSON.stringify(data)
+  return { json, data }
+}
+
 // here we just locate and tag relevant nodes
 exports.onCreateNode = async ({
   node,
@@ -60,9 +67,7 @@ exports.onCreateNode = async ({
   // add fields to child MDX for convenience in queries
   if (fields.type === MARKDOWN) {
     const mdxNode = getNode(node.children[0])
-    const data = mdxNode.frontmatter
-    console.log(data)
-    const json = JSON.stringify(data)
+    const { json, data } = formatDateData(mdxNode.frontmatter)
     const nodeData = {
       ...fields,
       json,
@@ -82,9 +87,7 @@ exports.onCreateNode = async ({
     const parsedYaml = jsYaml.load(await loadNodeContent(node));
     (collection ? parsedYaml : [parsedYaml]).forEach((_data, index) => {
       // cast date to a string to make it queryable similar to mdx
-      const date = _data.date instanceof Date ? _data.date.toISOString() : _data.date
-      const data = _data.date ? { ..._data, date } : _data
-      const json = JSON.stringify(data)
+      const { json, data } = formatDateData(_data)
       const nodeData = {
         ...fields,
         id: `${fields.id}${collection ? `-${index}` : ''}`,
